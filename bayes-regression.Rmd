@@ -1,0 +1,167 @@
+---
+title: "Bayesian Regression"
+author: "Antonio Miranda"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r load_packages, message=FALSE, echo =FALSE, warning = FALSE, results='hide'}
+# Load libraries
+packages_needed<-c("car", "corrplot","MCMCglmm", "BASS", "brnn")
+#install.packages(packages_needed)
+lapply(packages_needed, require, character.only = TRUE)
+```
+
+## 1. Introduction.
+
+For this problem, we are going to use the [beer consumption dataset in Sao Paulo](https://www.kaggle.com/dongeorge/beer-consumption-sao-paulo), from Kaggle. It has 4 numeric attributes - mean, maximum and minimum temperature of the day in Celsius and the rainfall in milimiters (cubic millimeters of rain per square millimeter of surface)- and the response, the beer consumption in liters. Then, our objective is to model the amount of beer consumed in Sao Paulo in a day given weather information (temperature and rainfall).
+
+
+```{r load_data}
+beer = read.csv('Beer_dataset.csv')
+
+# remove unuseful column
+beer$X = NULL
+
+# new colnames
+colnames(beer) = c('mean_t', 'min_t', 'max_t', 'rainfall', 'beer')
+```
+
+<br />
+
+<br />
+
+## 2. Exploratory analysis.
+
+We can plot the pairwise scatter plots and the correlation matrix to get an idea about the variables of the dataset. 
+
+```{r exploratory_plots}
+pairs(beer,pch=19,main="Pairwise scatterplots of the datset")
+corrplot(cor(beer),order="hclust")
+```
+
+From the scatter plots and the correlation matrix we realize that we have to remove **mean_t** because it has a really high correlation with **max_t** and **min_t** (obvious, right?). Since these two are also correlated, we will remove them and maintain the **mean_t** which somehow captures all the information
+
+
+```{r remove_mean_t}
+beer$max_t = NULL
+beer$min_t = NULL
+```
+
+We are left with 2 predictors and 1 response variable. Since the number of predictors is that low, approaches such as Lasso and Ridge regression are probably less interesting than in other problems, where the number of predictors is higher. 
+
+<br />
+
+<br />
+
+## 3. Regression.
+
+### 3.1. Linear Regression.
+
+We saw in the scatter plots some linear dependency between the output class and the predictor **mean_t**. 
+
+```{r lowess_plots}
+plot(beer ~ mean_t,xlab="Mean Temperature",ylab="Beer Consumption",data=beer)
+with(beer, lines(lowess(mean_t, beer, f=0.5, iter=0), lwd=2))
+```
+
+We will then first use a linear Bayesian regression and if the results are not satisfactory we will approach more complicated methods.
+
+```{r fit_linear}
+bayes.reg <- MCMCglmm(beer ~ mean_t + rainfall,data=beer)
+plot(bayes.reg)
+beta=bayes.reg$Sol
+print('Estimated mean of the beta parameters: ')
+colMeans(beta)
+```
+
+We observe how the expected value of the beta parameter is higher (and positive) for the predictor **mean_t** than for the predictor **rainfall**. Despite the beta parameter for the **rainfall** predictor is close to zero, it is significantly different from it (seen below in the summary output), and we can see how its distribution comprehends numbers between $-0.10$ and $-0.04$, more or less.
+
+```{r summary_linear}
+summary(bayes.reg)
+```
+
+In addition, in the summary are represented the Highers Posterior Density intervals (the shortest intervals of 0.95 probability for the posterior), and in both coefficients they do not contain $0$. 
+
+With respect to the variance, the posterior mean is 12.25, and we saw in the previous plot that its posterior distribution ranges from 10 til 15 in most of its value (in fact, the HPD are $10.48$ and $14.04$).
+
+Note that the deviance information criterion (DIC) is almost 2000. This value is informative to compare our model with others. 
+
+```{r MAP_linear}
+sigma2=bayes.reg$VCV
+print('Mode of the posterior of beta parameters: ')
+posterior.mode(beta)
+print(paste0('Mode of the posterior of the variance: ', posterior.mode(sigma2)))
+```
+
+If we look at the modes of the posterior, they are close to the means.
+
+We could use this model to make predictions, but we should not use a Point Estimate of parameters, since the uncertainty captured in the posterior density would be ignored. For instance, we could use our model to predict the 95% predictive interval of the liters of beer consumed in a day in which the mean temperature is 30º Celsius and it is going to rain 14 mm. 
+
+```{r toy_prediction}
+mean_t.new = 30
+rainfall.new = 14
+x.new = c(1,mean_t.new,rainfall.new)
+y.new.pred=rnorm(length(beta),x.new%*%t(beta),sqrt(bayes.reg$VCV))
+quantile(y.new.pred,probs=c(0.025,0.975))
+```
+
+We see how the interval is quite wide. 
+
+As it was discussed previously, Lasso and Ridge are not really the approach to follow in our problem, since they are typically used when the number of covariates is large, and we only have two predictors. 
+
+Classical cogistic and Poisson regression are also not used for problems like ours. 
+
+<br />
+
+### 3.2. Linear Regression after logarithmic transformation.
+
+We are going to follow the same workflow but now using the logarithm of our predictors and our output variable. Note that in the case of the **rainfall** predictor, the transformation is slightly more complicated to avoid having negative infinite values: we have added 1 unit to the original predictor.
+
+```{r log_regression}
+bayes.reg.log <- MCMCglmm(log(beer) ~ log(mean_t) + log(rainfall + 1),data=beer)
+summary(bayes.reg.log)
+plot(bayes.reg.log)
+```
+
+In the summary we can observe how the DIC have improved a lot! In addition, the posterior densities of the variance lies now withing a much smaller range, and the same happens with the intercept. 
+
+According to the 95% HPD intervals, both predictor beta parameters are significantly different from $0$. 
+
+Once again, the MAP estimates are similar to the estimated means. 
+
+```{r point_estimates_log}
+beta.log=bayes.reg.log$Sol
+sigma2.log=bayes.reg.log$VCV
+print('Mode of the posterior of beta parameters: ')
+posterior.mode(beta.log)
+print(paste0('Mode of the posterior of the variance: ', posterior.mode(sigma2.log)))
+```
+
+If we use our new model to estimate the predictive interval of liters of beer consumed in Sao Paulo, we find again a very wide interval (note that we have undone the logarithmic transformation in the predictions).
+
+```{r prediction_log}
+mean_t.new = 30
+rainfall.new = 14
+x.new = c(1,log(mean_t.new),log(rainfall.new + 1))
+y.new.pred=rnorm(length(beta.log),x.new%*%t(beta.log),sqrt(bayes.reg.log$VCV))
+exp(quantile(y.new.pred,probs=c(0.025,0.975)))
+```
+
+<br />
+
+<br />
+
+## 4. Conclusions
+
+From the original dataset, we removed two variables whose information was redundant (the maximum and minimum temperature of the day). If we included those instead of the mean temperature, the beta parameters of the minimum temperature was not significantly different from zero: its posterior distribution had high values at zero. 
+
+With the two final regressors, we have tried two linear models, one regressing on the output variable and the other regressing on the log-transformed output variable (and with also logarithmically transformed predictors) and, according to the DIC, the second option yields better results. 
+
+When predicting the number of liters of beer consumed in Sao Paulo with both models, the 95% predictive interval was considerably wide, suggesting that our model should be refined and possibly include other predictors such as the day of the week or the whether the day is bank holyday or not.
+
+Generalized linear models are not designed for cases like ours, rather for predicting the occurrence of an event or the number of events in a time period. And regularized models such as Ridge and Lasso regression are particularly useful when the number of covariates is high, and that is not our case, either. 
+
+It is not included in this report, but when testing with logarithmically transforming only one of the covariates, or none, and predicting the log-transformed output variable, the results were very similar to the ones obtained with the second model of the report.
